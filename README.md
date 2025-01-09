@@ -1,8 +1,8 @@
-# Example Workflow using ENIGMA, `bloodstream`, kinfitr, and AHBA
+# Example Workflow using `ENIGMA`, `bloodstream`, `kinfitr`, and `AHBA`
 
 Example use shown
 
-Our general pipeline/workflow is as follows:
+General pipeline/workflow is as follows:
  
 1. Use Bash shell scripting to semi-automate the PETsurfer processing of all subjects, up to the `mri_gtmpv` step of PETsurfer. 
 2. Use a custom Python script to extract the values of `nopvc.nii.gz` (TAC of all 100 ROIs), `km.hb.tac.dat` (TAC of highbinding regions), `km.ref.tac.dat` (TAC of reference regions) and compile them into one TSV file subj_ses-sessionname_pvc-nopvc_desc-mc_tacs.tsv 
@@ -23,5 +23,5 @@ c) compute the Z-score for all ROI for this subject by subtracting the subject m
 
 12. Using the Z-score average of all subects (two 1x 100 vectors), keep only values as required by ENIGMA Python package. 
 
-We used data from https://figshare.com/articles/dataset/A_FreeSurfer_view_of_the_cortical_transcriptome_generated_from_the_Allen_Human_Brain_Atlas/1439749 which provided AHBA gene expression on DK atlas (only a few left regions plus all cortical regions). The genetic expression data was normalized using Z-score method (using mean and standard deviation of each ROI across all genes). The PTGS1 gene was selected based on literature review and domain knowledge. 
+Data from https://figshare.com/articles/dataset/A_FreeSurfer_view_of_the_cortical_transcriptome_generated_from_the_Allen_Human_Brain_Atlas/1439749  provided AHBA gene expression on DK atlas (only a few left regions plus all cortical regions). The genetic expression data is normalized using Z-score method (using mean and standard deviation of each ROI across all genes). Here we demonstrate use with PTGS1.
 The Z-score of PTGS1 was visualized using ENIGMA and Spearman’s rank correlation was calculated.
