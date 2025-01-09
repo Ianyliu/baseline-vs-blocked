@@ -1,0 +1,550 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+# install.packages("kinfitr")
+library(kinfitr)
+library(tidyverse)
+library(knitr)
+library(cowplot)
+library(mgcv)
+library(ggforce)
+library(bloodstream)
+
+theme_set(theme_light())
+```
+```{r}
+# studypath <- '/Volumes/PortableSSD/data/OpenNeuro Raw ds004230'
+studypath <- '/Users/ianliu/Medical Research/Data/17-plus7'
+bloodstream(studypath = studypath,
+            # configpath = '/Volumes/PortableSSD/data/OpenNeuro Raw ds004230/derivatives/config_2024-12-27_id-uxdt.json'
+            configpath = '/Users/ianliu/Medical Research/Data/17-plus7/derivatives/config_2024-12-31_id-KbYM.json'
+            )
+```
+```{r}
+blstream_inputs <- bloodstream_import_inputfunctions(
+  # '/Volumes/PortableSSD/data/OpenNeuro Raw ds004230/derivatives/bloodstream2024-12-27_id-uxdt/'
+  # '/Users/ianliu/Medical Research/Data/Blood/derivatives/bloodstream2024-12-28_id-Qnkm'
+  '/Users/ianliu/Medical Research/Data/17-plus7/derivatives/bloodstream2024-12-31_id-KbYM'
+)
+petsurfer_tacs <- bids_parse_files(
+  # '/Volumes/PortableSSD/data/OpenNeuro Raw ds004230/derivatives/petsurfer/'
+  # '/Users/ianliu/Medical Research/Data/Blood/derivatives/petsurfer'
+  '/Users/ianliu/Medical Research/Data/17-plus7/derivatives/petsurfer'
+  ) |>
+  unnest(filedata) |>
+  filter(measurement == "tacs") |> 
+  mutate(tacs = map(path_absolute, ~read.delim(.x, sep = "\t", header = T))) |>
+  select(ses:run, tacs) |> 
+  mutate(tacs = map(tacs, ~.x |>
+                      mutate(
+                        frame_start = frame_start /60,
+                        frame_end = frame_end /60,
+                        t_tac = frame_start + (frame_end - frame_start)/2,
+                        dur = frame_end - frame_start) |>
+                      gather(Region, Radioactivity, -frame_start,
+                             -frame_end, -t_tac, -dur) |>
+                      mutate(
+                        Radioactivity = unit_convert(
+                          Radioactivity, 
+                          from = "Bq", 
+                          to = "kBq")) |>
+                      spread(Region, Radioactivity) |>
+                      mutate(
+                        hippocampus = 0.5 * (left_hippocampus + right_hippocampus),
+                        weights = weights_create(frame_start, 
+                                                 frame_end, 
+                                                 highbinding, "C11")
+                      )
+                    ))
+combined_df <- petsurfer_tacs |>
+  left_join(blstream_inputs) |>
+  filter(!is.na(input), !is.na(rec))
+
+ map2(combined_df$tacs, combined_df$input, 
+     ~ggplot(.x, aes(x = t_tac, y = hippocampus)) +
+       geom_point() + 
+       geom_line() +
+       geom_line(data = .y,
+                 aes(x = Time, y = AIF),
+                 color = "red") +
+       labs(title = "PET TACs and Hippocampus",
+            x = "Time (min)",
+            y = "Radioactivity (kBq/cc)"
+      ))
+```
+
+```{r}
+combined_df <- combined_df |>
+  group_by(sub, ses) |>
+  mutate(fit_ma1 = map2(tacs, input, ~ma1(t_tac = .x$t_tac, 
+                                          tac = .x$hippocampus, 
+                                          input = .y, 
+                                          weights = .x$weights, 
+                                          vB = 0.05, 
+                                          tstarIncludedFrames = 11))) 
+pars_ma1 <- map(combined_df$fit_ma1, "par") |>
+  bind_rows()
+map(combined_df$fit_ma1[1:5], plot)
+```
+
+```{r}
+combined_df$Vt_MA1 <- pars_ma1$Vt
+ggplot(combined_df, aes(x = Vt_MA1)) +
+  geom_histogram(fill = "grey", color = "black", bins = 10)
+ggplot(combined_df, aes(x= ses, y = Vt_MA1, group = sub, color = sub)) +
+  geom_point(size = 3) + 
+  geom_line() +
+  scale_color_brewer(type= 'qual', palette = 3) 
+```
+
+```{r}
+# Extract all regions (excluding columns like `frame_start`, `frame_end`, etc.)
+region_cols <- colnames(combined_df$tacs[[1]]) %>%
+  setdiff(c("frame_start", "frame_end", "dur", "t_tac", "weights"))
+vt_df <- combined_df |>
+  select(sub, ses, task, trc, acq, run) 
+
+for (i in 1:length(region_cols)) {
+  combined_df <- combined_df |>
+    group_by(sub, ses) |>
+    mutate(fit_ma1 = map2(tacs, input, ~ma1(t_tac = .x$t_tac, 
+                                            tac = .x[[region_cols[i]]], 
+                                            input = .y, 
+                                            weights = .x$weights, 
+                                            vB = 0.05, 
+                                            tstarIncludedFrames = 11))) 
+  pars_ma1 <- map(combined_df$fit_ma1, "par") |>
+    bind_rows()
+  combined_df[[paste0("Vt_", region_cols[i])]] <- pars_ma1$Vt
+  vt_df[[region_cols[i]]] <- pars_ma1$Vt
+}
+
+# convert vt_df to long format 
+vt_df_long <- vt_df |>
+  pivot_longer(cols = -c(sub, ses, task, trc, acq, run), names_to = "Region", values_to = "Vt")
+# write.csv(vt_df_long, 
+#           file = "'/Users/ianliu/Medical Research/Data/Blood/derivatives/Vt_Values.csv'")
+# write.csv(vt_df, 
+#           file = "'/Users/ianliu/Medical Research/Data/Blood/derivatives/Vt_Values_Wide.csv'")
+
+write.csv(vt_df_long, 
+          file = "/Users/ianliu/Medical Research/Data/17-plus7/derivatives/Vt_Values.csv")
+write.csv(vt_df, 
+          file = "/Users/ianliu/Medical Research/Data/17-plus7/derivatives/Vt_Values_Wide.csv")
+```
+
+
+```{r}
+# # Extract all regions (excluding columns like `frame_start`, `frame_end`, etc.)
+# region_cols <- colnames(combined_df$tacs[[1]]) %>%
+#   setdiff(c("frame_start", "frame_end", "dur", "t_tac", "weights"))
+# 
+# combined_df <- combined_df |>
+#   group_by(sub, ses) |>
+#   mutate(fit_ma1 = map2(tacs, input, ~ma1(t_tac = .x$t_tac, 
+#                                           tac = .x$hippocampus, 
+#                                           input = .y, 
+#                                           weights = .x$weights, 
+#                                           vB = 0.05, 
+#                                           tstarIncludedFrames = 11))) 
+# pars_ma1 <- map(combined_df$fit_ma1, "par") |>
+#   bind_rows()
+# map(combined_df$fit_ma1[1:5], plot)
+
+# # Perform Vt calculation for each region
+# combined_df <- combined_df |>
+#   group_by(sub, ses) |>
+#   mutate(fit_ma1_regions = map2(tacs, input, ~map(region_cols, function(region) {
+#     # Fit the MA1 model for the current region
+#     ma1(
+#       t_tac = .x$t_tac, 
+#       tac = .x[[region]], 
+#       input = .y, 
+#       weights = .x$weights, 
+#       vB = 0.05, 
+#       tstarIncludedFrames = 11
+#     )
+#   })))
+
+# # Create a dataframe for each region's Vt
+# combined_df <- combined_df |>
+#   mutate(
+#     Vt_regions = map2(fit_ma1_regions, list(region_cols), ~map2_dfr(.x, .y, ~tibble(
+#       region = .y,
+#       Vt = .x$par$Vt
+#     )))
+#   )
+# 
+# # Unnest the region-wise Vt values into a single dataframe
+# region_vt_df <- combined_df |>
+#   select(sub, ses, Vt_regions) |>
+#   unnest(Vt_regions)
+# 
+# # View the resulting dataframe
+# region_vt_df
+```
+
+
+
+
+# Example Kinetic Modeling 
+
+```{r}
+data(simref)
+head(simref)
+head(simref$tacs[[1]])
+
+```
+```{r}
+tacdata_1 <- simref$tacs[[1]]
+
+t_tac <- tacdata_1$Times
+reftac <- tacdata_1$Reference
+roitac <- tacdata_1$ROI1
+weights <- tacdata_1$Weights
+
+fit1 <- srtm(t_tac, reftac, roitac)
+```
+
+```{r}
+plot(fit1)
+```
+
+```{r}
+plot_residuals(fit1)
+```
+```{r}
+str(fit1)
+```
+
+```{r}
+fit1$par
+```
+```{r}
+fit1$par.se
+```
+
+```{r}
+g <- fit1$fit
+
+coef(g)
+```
+```{r}
+resid(g)
+vcov(g)
+AIC(g)
+BIC(g)
+
+```
+
+```{r}
+simref <- simref %>% 
+  group_by(Subjname, PETNo) %>% 
+  mutate(MRTM1fit = map(tacs, ~mrtm1(t_tac = .x$Times, reftac = .x$Reference,
+                                      roitac = .x$ROI1, 
+                                      weights = .x$Weights))) %>% 
+  ungroup()
+```
+
+```{r}
+simref <- simref %>% 
+  mutate(bp_MRTM1 = map_dbl(MRTM1fit, c("par", "bp")))
+
+ggplot(simref, aes(x=bp_MRTM1)) +
+  geom_histogram(fill="grey", colour="black", bins=10)
+```
+```{r}
+simref <- simref %>% 
+  mutate(k2prime = map_dbl(MRTM1fit, c("par", "k2prime")))
+
+ggplot(simref, aes(x=k2prime)) +
+  geom_histogram(fill="grey", colour="black", bins=10)
+```
+
+
+```{r}
+simref <- simref %>% 
+  select(-MRTM1fit, -bp_MRTM1)
+
+simref
+```
+
+```{r}
+simref_long <- simref %>% 
+  unnest(tacs) %>% 
+  select(-StartTime, -Duration, -PET)
+simref_long <- simref_long %>% 
+  gather(key = Region, value = TAC, -Times, -Weights,
+         -Subjname, -PETNo, -k2prime, -Reference)
+simref_long <- simref_long %>% 
+  group_by(Subjname, PETNo, k2prime, Region) %>% 
+  nest(tacdata = -c(Subjname, PETNo, k2prime, Region))
+simref_long
+simref_long$tacdata[[1]]
+```
+```{r}
+simref_long <- simref_long %>% 
+  group_by(Subjname, PETNo, Region) %>% 
+  
+  # SRTM
+  mutate(SRTM = map(tacdata,
+                         ~srtm(t_tac=.x$Times, reftac = .x$Reference, 
+                               roitac = .x$TAC, 
+                               weights = .x$Weights)),
+         SRTM = map_dbl(SRTM, c("par", "bp"))) %>% 
+  
+  # MRTM1
+  mutate(MRTM1 = map(tacdata,
+                         ~mrtm1(t_tac=.x$Times, reftac = .x$Reference, 
+                               roitac = .x$TAC, 
+                               weights = .x$Weights)),
+         MRTM1 = map_dbl(MRTM1, c("par", "bp"))) %>% 
+  
+  # MRTM2
+  mutate(MRTM2 = map2(tacdata, k2prime,
+                         ~mrtm2(t_tac=.x$Times, reftac = .x$Reference, 
+                               roitac = .x$TAC, k2prime = .y,
+                               weights = .x$Weights)),
+         MRTM2 = map_dbl(MRTM2, c("par", "bp"))) %>% 
+  
+  # refLogan
+  mutate(refLogan = map2(tacdata, k2prime,
+                         ~refLogan(t_tac=.x$Times, reftac = .x$Reference, 
+                               roitac = .x$TAC, k2prime = .y,
+                               weights = .x$Weights, tstarIncludedFrames = 10)),
+         refLogan = map_dbl(refLogan, c("par", "bp"))) %>% 
+  
+  # refmlLogan
+  mutate(refmlLogan = map2(tacdata, k2prime,
+                         ~refmlLogan(t_tac=.x$Times, reftac = .x$Reference, 
+                               roitac = .x$TAC, k2prime = .y,
+                               weights = .x$Weights, tstarIncludedFrames = 10)),
+         refmlLogan = map_dbl(refmlLogan, c("par", "bp"))) %>% 
+  ungroup()
+```
+```{r}
+simref_bpvals <- simref_long %>%
+  ungroup() %>% 
+  select(Region, SRTM, refLogan, refmlLogan, MRTM1, MRTM2)
+
+refvals <- ggplot(simref_bpvals, aes(x = .panel_x, y = .panel_y, 
+                                     colour=Region, fill=Region)) + 
+                      geom_point(position = 'auto') + 
+                      geom_autodensity(alpha = 0.3, colour = NA, 
+                                       position = 'identity') + 
+                      facet_matrix(vars(SRTM, refLogan, refmlLogan, 
+                                        MRTM1, MRTM2), 
+                                   layer.diag = 2) +
+                      geom_smooth(method="lm", se=F) +
+                      guides(colour=FALSE, fill=FALSE)
+
+print(refvals)
+```
+
+```{r}
+rm(simref_long)  # Removing to free up some memory
+```
+
+```{r}
+data(pbr28)
+
+pbr28 <- pbr28[1:4,]
+
+names(pbr28)
+input <- blood_interp(
+  t_blood = pbr28$procblood[[2]]$Time / 60, 
+  blood = pbr28$procblood[[2]]$Cbl_dispcorr, 
+  t_plasma = pbr28$procblood[[2]]$Time / 60, 
+  plasma = pbr28$procblood[[2]]$Cpl_metabcorr,
+  t_parentfrac = 1, parentfrac = 1
+)
+pbr28 <- pbr28 %>% 
+  group_by(PET) %>% 
+  mutate(input = map(procblood,
+                     ~blood_interp(
+                        t_blood = .x$Time / 60, 
+                        blood = .x$Cbl_dispcorr, 
+                        t_plasma = .x$Time / 60, 
+                        plasma = .x$Cpl_metabcorr,
+                        t_parentfrac = 1, parentfrac = 1))) %>% 
+  ungroup()
+
+pbr28 <- pbr28 %>% 
+  group_by(Subjname) %>% 
+  mutate(delayFit = map2(tacs, input,
+                         ~twotcm(t_tac = .x$Times/60, # sec to min
+                                 tac = .x$WB, 
+                                 input = .y, 
+                                 weights = .x$Weights, 
+                                 vB=0.05)))
+walk2(pbr28$delayFit, pbr28$PET , 
+      ~print(plot_inptac_fit(.x) + ggtitle(.y)))
+which( pbr28$tacs[[1]]$Times/60 < 10)
+pbr28 <- pbr28 %>% 
+  group_by(Subjname) %>% 
+  mutate(delayFit = map2(tacs, input,
+                         ~twotcm(t_tac = .x$Times/60, # sec to min
+                                 tac = .x$WB, 
+                                 input = .y, 
+                                 weights = .x$Weights, 
+                                 vB=0.05, 
+                                 frameStartEnd = c(1, 22))))
+
+walk2(pbr28$delayFit, pbr28$PET , 
+      ~print(plot_inptac_fit(.x) + ggtitle(.y)))
+pbr28 <- pbr28 %>%
+  group_by(Subjname) %>% 
+  mutate(inpshift = map_dbl(delayFit, c("par", "inpshift")))
+
+pbr28 <- pbr28 %>% 
+  group_by(PET) %>% 
+  mutate(tacs = map(tacs, ~select(.x, Times, Weights, FC, STR, CBL))) %>% 
+  select(PET, tacs, input, inpshift)
+
+pbr28_input <- select(pbr28, PET, input)
+
+pbr28_tacs <- select(pbr28, PET, tacs, inpshift)
+
+pbr28_long <- pbr28_tacs %>% 
+  unnest(cols = tacs) %>% 
+  gather(key = Region, value = TAC, -Times, -Weights, -inpshift, -PET) %>% 
+  group_by(PET, inpshift, Region) %>% 
+  nest(tacdata = -c(PET, inpshift, Region)) %>% 
+  full_join(pbr28_input)
+
+t_tac     <- pbr28_long$tacdata[[2]]$Times/60
+tac       <- pbr28_long$tacdata[[2]]$TAC
+input     <- pbr28_long$input[[2]]
+weights   <- pbr28_long$tacdata[[2]]$Weights
+inpshift  <- pbr28_long$inpshift[2]
+
+pbrfit <- twotcm(t_tac, tac, input, weights, inpshift) 
+
+plot(pbrfit)
+
+plot(onetcm(t_tac, tac, input, weights, inpshift)) + 
+       labs(title="1TCM",
+            subtitle="Too few parameters, and underfits")
+plot(twotcm1k(t_tac, tac, input, weights, inpshift, vB = 0.05)) + 
+       labs(title="2TCM1k",
+            subtitle="Great fit, but macroparameters are less stable due to many parameters")
+
+plot(Loganplot(t_tac, tac, input,
+               tstarIncludedFrames =  10,
+               weights, inpshift)) + 
+       labs(title="Logan Plot",
+            subtitle="Linearised model using transformed data on both axes, after t* (10 frames)")
+plot(ma1(t_tac, tac, input,
+               tstarIncludedFrames =  10,
+               weights, inpshift)) + 
+       labs(title="MA1",
+            subtitle="Linearised model predicting actual y values, after t* (10 frames)")
+
+
+fit_1tcm <- function(tacdata, input, inpshift) {
+  onetcm(t_tac = tacdata$Times/60, tac = tacdata$TAC,
+         input = input, weights = tacdata$Weights, 
+         inpshift = inpshift)$par$Vt
+}
+
+fit_2tcm <- function(tacdata, input, inpshift) {
+  twotcm(t_tac = tacdata$Times/60, tac = tacdata$TAC,
+         input = input, weights = tacdata$Weights, 
+         inpshift = inpshift)$par$Vt
+}
+
+fit_2tcm1k <- function(tacdata, input, inpshift) {
+  twotcm1k(t_tac = tacdata$Times/60, tac = tacdata$TAC,
+         input = input, weights = tacdata$Weights, 
+         inpshift = inpshift, vB = 0.05)$par$Vt
+}
+
+fit_Logan <- function(tacdata, input, inpshift) {
+  Loganplot(t_tac = tacdata$Times/60, tac = tacdata$TAC,
+         input = input, weights = tacdata$Weights, 
+         inpshift = inpshift, vB = 0.05,
+         tstarIncludedFrames = 10)$par$Vt
+}
+
+fit_mlLogan <- function(tacdata, input, inpshift) {
+  mlLoganplot(t_tac = tacdata$Times/60, tac = tacdata$TAC,
+         input = input, weights = tacdata$Weights, 
+         inpshift = inpshift, vB=0.05,
+         tstarIncludedFrames = 10)$par$Vt
+}
+
+fit_ma1 <- function(tacdata, input, inpshift) {
+  ma1(t_tac = tacdata$Times/60, tac = tacdata$TAC,
+         input = input, weights = tacdata$Weights, 
+         inpshift = inpshift, vB = 0.05,
+         tstarIncludedFrames = 10)$par$Vt
+}
+
+fit_ma2 <- function(tacdata, input, inpshift) {
+  ma2(t_tac = tacdata$Times/60, tac = tacdata$TAC,
+         input = input, weights = tacdata$Weights, 
+         inpshift = inpshift, vB=0.05)$par$Vt
+}
+pbr28_long <- pbr28_long %>% 
+  group_by(PET, Region)
+  
+  # 1TCM
+pbr28_long <- pbr28_long %>% 
+  mutate("1TCM" = pmap_dbl(list(tacdata, input, inpshift), fit_1tcm))
+ # 2TCM
+pbr28_long <- pbr28_long %>% 
+  mutate("2TCM" = pmap_dbl(list(tacdata, input, inpshift), fit_2tcm))
+  # 2TCM1k
+pbr28_long <- pbr28_long %>% 
+  mutate("2TCM1k" = pmap_dbl(list(tacdata, input, inpshift), fit_2tcm1k))
+
+  # Logan
+pbr28_long <- pbr28_long %>% 
+  mutate("Logan" = pmap_dbl(list(tacdata, input, inpshift), fit_Logan))
+  
+  # mlLogan
+pbr28_long <- pbr28_long %>% 
+  mutate("mlLogan" = pmap_dbl(list(tacdata, input, inpshift), fit_mlLogan))
+  
+  # MA1
+pbr28_long <- pbr28_long %>% 
+  mutate("MA1" = pmap_dbl(list(tacdata, input, inpshift), fit_ma1))
+  
+  # MA2
+pbr28_long <- pbr28_long %>% 
+  mutate("MA2" = pmap_dbl(list(tacdata, input, inpshift), fit_ma2))
+  
+pbr28_long <- pbr28_long %>% 
+  ungroup()
+
+i=7
+tacdata = pbr28_long$tacdata[[i]]
+input = pbr28_long$input[[i]]
+inpshift =  pbr28_long$inpshift[i]
+
+badfit <- twotcm(t_tac = tacdata$Times/60, tac = tacdata$TAC,
+                  input = input, weights = tacdata$Weights, 
+                  inpshift = inpshift)
+
+badfit$par
+
+
+set.seed(42)
+multstartfit <- twotcm(t_tac = tacdata$Times/60, tac = tacdata$TAC,
+                        input = input, weights = tacdata$Weights, 
+                        inpshift = inpshift, 
+                        multstart_iter = 20)
+
+
+bind_rows(badfit$par, multstartfit$par) %>% 
+  mutate_all(~round(.x, 3)) %>% 
+  mutate(Method=c("Single Fit", "Multstart Fit"))
+```
+
+
+
+
