@@ -1,6 +1,6 @@
 # Baseline VS Blocked
 
-A lens into $\[^{11}C]$PS13 baseline va blocked 
+A lens into $[^{11}C]$ PS13 baseline va blocked 
 
 To evaluate the impact of blocking on imaging transcriptomics, we utilized a database of 22 baseline [11C]PS13 PET images (consisting of PS11  PS17  PS19  PS20  PS21  PS23  PS24  PS26  PS27  PS28  PS29  PS31  PS38  PS39  PS40  PS42 PSBB01  PSBB02  PSBB03  PSBB05  PSBB06   PSBB07) and 7 blocked (consisting of PS53  PSBB01  PSBB02  PSBB03  PSBB05  PSBB06   PSBB07) totaling 29 images. 
 
