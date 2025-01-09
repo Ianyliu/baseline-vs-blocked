@@ -2,6 +2,12 @@
 
 Example use shown
 
+![image](https://github.com/user-attachments/assets/97074d13-add8-45f7-9261-df0e2ffdc3d0)
+
+<img width="694" alt="image" src="https://github.com/user-attachments/assets/3ebb8bba-7a8a-48cc-8bde-0dc68226bcd9" />
+<img width="714" alt="image" src="https://github.com/user-attachments/assets/86f2575e-f0fc-4606-8b89-6427519a6513" />
+
+
 General pipeline/workflow is as follows:
  
 1. Use Bash shell scripting to semi-automate the PETsurfer processing of all subjects, up to the `mri_gtmpv` step of PETsurfer. 
